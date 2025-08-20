@@ -1,0 +1,176 @@
+<?php
+$room = $_GET['room'] ?? 'demo';
+?>
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Mini Meet PHP – Phòng <?= htmlspecialchars($room) ?></title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --gap: 12px; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background:#fafafa; color:#111; }
+    header { display:flex; align-items:center; justify-content:space-between; gap: var(--gap); flex-wrap:wrap; }
+    .room { padding:6px 10px; background:#f2f2f2; border-radius:10px; }
+    .videos { display:flex; gap: var(--gap); flex-wrap:wrap; margin-top: var(--gap); }
+    .panel { flex:1 1 360px; min-width: 280px; }
+    .label { margin:6px 0; opacity:.7; font-size:14px; }
+    video { width: 100%; aspect-ratio: 16/9; background:#111; border-radius:16px; }
+    .controls { margin-top: var(--gap); display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    button, input { padding:10px 14px; border-radius:10px; border:1px solid #ccc; background:white; }
+    button { cursor:pointer; }
+    input { width: 280px; }
+    .hint { font-size: 12px; opacity: .75; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Mini Meet (PHP + WebRTC)</h2>
+    <div class="room">Phòng: <b id="room"><?= htmlspecialchars($room) ?></b> · <span id="peers">0</span> người</div>
+  </header>
+
+  <div class="videos">
+    <div class="panel">
+      <div class="label">🎥 Bạn</div>
+      <video id="local" autoplay playsinline muted></video>
+    </div>
+    <div class="panel">
+      <div class="label">👥 Remote</div>
+      <video id="remote" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="btnCall">Call</button>
+    <button id="btnHangup">Hang up</button>
+    <button id="btnMute">Mute</button>
+    <button id="btnCam">Camera Off</button>
+    <button id="btnShare">Share Screen</button>
+    <input id="ws" placeholder="ws://localhost:8080" value="ws://localhost:8080" />
+  </div>
+  <div class="hint">
+    Gợi ý: mở 2 tab (hoặc 2 thiết bị) cùng đường dẫn phòng, ví dụ: <code>?room=demo</code>. Một bên bấm <b>Call</b>, bên còn lại sẽ nhận cuộc gọi.
+  </div>
+
+<script>
+const room = document.getElementById('room').textContent;
+const peersCountEl = document.getElementById('peers');
+const wsUrlInput = document.getElementById('ws');
+
+let pc, ws, localStream, screenTrack;
+let joined = false;
+
+const pcConf = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' }
+    // Triển khai thực tế: thêm TURN để ổn định (coturn)
+  ]
+};
+
+async function initMedia() {
+  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  document.getElementById('local').srcObject = localStream;
+}
+
+function connectWS() {
+  ws = new WebSocket(wsUrlInput.value);
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'join', room }));
+    joined = true;
+  };
+  ws.onmessage = async (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.type === 'peers') {
+      peersCountEl.textContent = data.count;
+    } else if (data.type === 'offer') {
+      await ensurePC();
+      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: 'answer', answer }));
+    } else if (data.type === 'answer') {
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+    } else if (data.type === 'ice') {
+      try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch(e) { console.error(e); }
+    }
+  };
+  ws.onclose = () => { joined = false; };
+}
+
+async function ensurePC() {
+  if (pc) return pc;
+  pc = new RTCPeerConnection(pcConf);
+
+  // Add local tracks
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+  // Remote stream
+  const remoteVideo = document.getElementById('remote');
+  const remoteStream = new MediaStream();
+  remoteVideo.srcObject = remoteStream;
+  pc.ontrack = (e) => {
+    e.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+  };
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate && joined) {
+      ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+    }
+  };
+
+  return pc;
+}
+
+document.getElementById('btnCall').onclick = async () => {
+  if (!localStream) await initMedia();
+  if (!ws || ws.readyState !== 1) connectWS();
+  await new Promise(r => setTimeout(r, 200)); // đợi join
+  await ensurePC();
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: 'offer', offer }));
+};
+
+document.getElementById('btnHangup').onclick = () => {
+  if (pc) { pc.close(); pc = null; }
+};
+
+document.getElementById('btnMute').onclick = () => {
+  if (!localStream) return;
+  const t = localStream.getAudioTracks()[0];
+  if (!t) return;
+  t.enabled = !t.enabled;
+  document.getElementById('btnMute').textContent = t.enabled ? 'Mute' : 'Unmute';
+};
+
+document.getElementById('btnCam').onclick = () => {
+  if (!localStream) return;
+  const t = localStream.getVideoTracks()[0];
+  if (!t) return;
+  t.enabled = !t.enabled;
+  document.getElementById('btnCam').textContent = t.enabled ? 'Camera Off' : 'Camera On';
+};
+
+document.getElementById('btnShare').onclick = async () => {
+  try {
+    const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    screenTrack = displayStream.getVideoTracks()[0];
+    const sender = pc?.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (sender && screenTrack) {
+      await sender.replaceTrack(screenTrack);
+      screenTrack.onended = async () => {
+        const camTrack = localStream.getVideoTracks()[0];
+        if (camTrack && sender) await sender.replaceTrack(camTrack);
+      };
+    }
+  } catch(e) { console.error(e); }
+};
+
+// Khởi động
+initMedia().catch(console.error);
+connectWS();
+</script>
+</body>
+</html>

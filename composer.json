@@ -1,0 +1,16 @@
+{
+    "name": "you/mini-meet-php",
+    "description": "Mini Google Meet with PHP + WebRTC + Ratchet",
+    "type": "project-1",
+    "require": {
+      "cboden/ratchet": "^0.4.4"
+    },
+    "autoload": {
+      "psr-4": {
+        "": "src/"
+      }
+    },
+    "minimum-stability": "stable",
+    "license": "MIT"
+  }
+  
